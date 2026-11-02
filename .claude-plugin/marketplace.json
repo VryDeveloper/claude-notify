@@ -1,0 +1,12 @@
+{
+  "name": "claudenotify",
+  "owner": { "name": "VryDeveloper" },
+  "metadata": { "description": "Popup no canto da tela quando o Claude Code termina ou pede permissão." },
+  "plugins": [
+    {
+      "name": "avisos-popup",
+      "source": "./",
+      "description": "Popup no canto superior direito quando o Claude termina ou pede permissão, com botões para aprovar e campo de resposta rápida."
+    }
+  ]
+}
