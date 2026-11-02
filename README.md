@@ -55,7 +55,7 @@ Variáveis de ambiente (no shell ou no `env` do `settings.json` do Claude Code):
 
 | Variável | Padrão | Efeito |
 |---|---|---|
-| `CLAUDE_AVISOS_TEMPO` | `900` | segundos até o popup fechar sozinho |
+| `CLAUDE_AVISOS_TEMPO` | `20` | segundos até o popup fechar sozinho (de 5 a 20) |
 | `CLAUDE_AVISOS_SOM` | `1` | `0` desliga o sino |
 | `CLAUDE_AVISOS_RESPOSTA` | `1` | `0` faz o "terminei" ser só um aviso, sem campo de resposta e sem segurar o terminal |
 | `CLAUDE_AVISOS_DESLIGAR` | `0` | `1` desliga tudo |

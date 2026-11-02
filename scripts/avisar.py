@@ -11,7 +11,7 @@ Regra de ouro: qualquer erro termina calado com código 0 e sem saída, e o
 Claude segue com o fluxo normal do terminal. O plugin nunca pode travar o Claude.
 
 Configuração por variáveis de ambiente:
-  CLAUDE_AVISOS_TEMPO     segundos até o popup fechar sozinho (padrão 900)
+  CLAUDE_AVISOS_TEMPO     segundos até o popup fechar sozinho (padrão 20, máximo 20)
   CLAUDE_AVISOS_SOM       0 para não tocar o sino
   CLAUDE_AVISOS_RESPOSTA  0 para o aviso de "terminei" não esperar resposta
   CLAUDE_AVISOS_DESLIGAR  1 para desligar tudo
@@ -35,7 +35,9 @@ LARGURA = 380
 MARGEM = 16
 ESPACO = 10
 PASTA_VAGAS = os.path.join(tempfile.gettempdir(), "claude-avisos")
-VAGA_VELHA = 2 * 60 * 60  # vaga sem dono há mais de 2 h é lixo de um popup morto
+VAGA_VELHA = (
+    60  # popup dura no máximo 20 s; vaga mais velha que isso é de um popup morto
+)
 
 CORES = {
     "fundo": "#1f1e1d",
@@ -214,9 +216,31 @@ def claude_em_foco() -> bool:
     return False
 
 
+MARCA_FIM = os.path.join(tempfile.gettempdir(), "claude-avisos-ultimo-fim")
+
+
+def marcar_fim() -> None:
+    try:
+        with open(MARCA_FIM, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+    except OSError:
+        pass
+
+
+def fim_recente(segundos: int = 180) -> bool:
+    try:
+        return time.time() - os.path.getmtime(MARCA_FIM) < segundos
+    except OSError:
+        return False
+
+
 def algum_popup_aberto() -> bool:
     try:
-        return bool(os.listdir(PASTA_VAGAS))
+        agora = time.time()
+        return any(
+            agora - os.path.getmtime(os.path.join(PASTA_VAGAS, nome)) < VAGA_VELHA
+            for nome in os.listdir(PASTA_VAGAS)
+        )
     except OSError:
         return False
 
@@ -298,7 +322,7 @@ class Popup:
         botoes: list[tuple[str, str, str]] | None = None,
         campo: str | None = None,
         acao_enter: str | None = None,
-        tempo: int = 900,
+        tempo: int = 20,
     ) -> None:
         import tkinter as tk
         from tkinter import font as tkfont
@@ -552,6 +576,7 @@ def modo_permissao(dados: dict, tempo: int) -> dict | None:
 
 def modo_fim(dados: dict, tempo: int) -> dict | None:
     resumo = encurtar(ultima_mensagem(dados), 280) or "Terminei o que você pediu."
+    marcar_fim()
     if os.environ.get("CLAUDE_AVISOS_RESPOSTA", "1") == "0":
         Popup(
             dados,
@@ -606,6 +631,8 @@ def modo_aviso(dados: dict, tempo: int) -> None:
     mensagem = dados.get("message", "")
     tipo = dados.get("notification_type", "")
     if tipo == "idle_prompt":
+        if fim_recente():
+            return  # o popup de "terminei" acabou de avisar
         dados = {**dados, "title": "Estou esperando você"}
         mensagem = "Terminei e estou esperando sua resposta no Claude."
     elif tipo == "permission_prompt":
@@ -653,11 +680,12 @@ def principal(argv: list[str]) -> int:
         os.remove(caminho)
         segundo_plano = True
     else:
-        bruto = sys.stdin.read()
+        # o Claude Code manda UTF-8; no Windows o padrão do Python seria cp1252
+        bruto = sys.stdin.buffer.read().decode("utf-8", "replace")
         dados = json.loads(bruto) if bruto.strip() else {}
         segundo_plano = False
 
-    tempo = max(10, env_int("CLAUDE_AVISOS_TEMPO", 900))
+    tempo = min(20, max(5, env_int("CLAUDE_AVISOS_TEMPO", 20)))
 
     # você está olhando para o Claude: deixa o pedido aparecer no lugar de sempre
     if not segundo_plano and claude_em_foco():
@@ -678,7 +706,8 @@ def principal(argv: list[str]) -> int:
         modo_aviso(dados, tempo)
 
     if saida is not None:
-        sys.stdout.write(json.dumps(saida, ensure_ascii=False))
+        # só ASCII na saída: os acentos viram \\u00e1 e chegam certos em qualquer sistema
+        sys.stdout.write(json.dumps(saida))
     return 0
 
 

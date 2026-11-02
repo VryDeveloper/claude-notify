@@ -1,6 +1,6 @@
 {
   "name": "avisos-popup",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Popup no canto superior direito quando o Claude termina ou pede permissão, com botões para aprovar e campo de resposta rápida.",
   "author": { "name": "VryDeveloper" }
 }
