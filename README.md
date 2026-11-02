@@ -14,7 +14,7 @@ Assim você dá alt+tab, faz outra coisa e é chamado quando precisar.
 ## Onde funciona
 
 - **Claude Code no terminal** do seu PC: sim.
-- **Claude Desktop, sessões de código locais** (aba Code rodando no seu PC): sim, elas usam os mesmos plugins instalados com `claude plugin install`.
+- **Claude Desktop, sessões de código locais** (aba Code rodando no seu PC): deve funcionar, porque elas usam o Claude Code do seu PC e os plugins instalados no seu usuário. Ainda não foi testado.
 - **Sessões na nuvem** (Claude Code na web ou sessões remotas): não, o hook roda no servidor, não no seu PC.
 - **Conversas normais do Claude** (aba Chat): não, elas não têm hooks.
 
