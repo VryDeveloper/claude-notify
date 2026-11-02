@@ -49,7 +49,7 @@ São hooks do Claude Code (`hooks/hooks.json`) que chamam `scripts/avisar.py`:
 
 Vários popups (de várias sessões) se empilham sem sobrepor. Qualquer erro, ou falta de Python/tkinter, faz o script sair calado: o Claude segue normal no terminal.
 
-**Atenção:** quando você está fora da janela, enquanto um popup de permissão ou de "terminei" está aberto, o terminal espera por ele. Se voltou para o terminal, aperte **Esc** no popup (ou clique no ✕) para responder por lá.
+**Atenção:** enquanto um popup de permissão ou de "terminei" está aberto (no máximo 20 s), o Claude espera por ele. Para responder na janela do Claude, clique no popup: ele fecha e leva você para lá.
 
 ## Configurar
 
