@@ -9,6 +9,15 @@ Plugin do Claude Code que abre um popup no **canto superior direito da tela** qu
 
 Assim você dá alt+tab, faz outra coisa e é chamado quando precisar.
 
+**Só quando você não está olhando.** No Windows, se a janela do Claude (o Claude Desktop ou o terminal onde o Claude Code roda) estiver em foco, o popup não aparece e o pedido fica no lugar de sempre. Se você sair da janela depois, o aviso de "estou esperando você" do Claude Code vira um popup.
+
+## Onde funciona
+
+- **Claude Code no terminal** do seu PC: sim.
+- **Claude Desktop, sessões de código locais** (aba Code rodando no seu PC): sim, elas usam os mesmos plugins instalados com `claude plugin install`.
+- **Sessões na nuvem** (Claude Code na web ou sessões remotas): não, o hook roda no servidor, não no seu PC.
+- **Conversas normais do Claude** (aba Chat): não, elas não têm hooks.
+
 ## Instalar
 
 Precisa de Python 3 com tkinter (já vem no instalador oficial do Python no Windows e no macOS; no Linux: `sudo apt install python3-tk`).
@@ -34,11 +43,11 @@ São hooks do Claude Code (`hooks/hooks.json`) que chamam `scripts/avisar.py`:
 | `PermissionRequest` | Permitir / Sempre / Negar | a decisão; se você fechar (✕ ou Esc) ou o tempo acabar, o pedido normal aparece no terminal |
 | `Stop` | resumo + resposta rápida | sua resposta como próxima instrução; Ok/Esc só fecha |
 | `PreToolUse` (AskUserQuestion) | avisa da pergunta | nada (não bloqueia) |
-| `Notification` | aviso simples | nada (não bloqueia) |
+| `Notification` | aviso simples (ex.: "estou esperando você"), se não houver outro popup aberto | nada (não bloqueia) |
 
 Vários popups (de várias sessões) se empilham sem sobrepor. Qualquer erro, ou falta de Python/tkinter, faz o script sair calado: o Claude segue normal no terminal.
 
-**Atenção:** enquanto um popup de permissão ou de "terminei" está aberto, o terminal espera por ele. Se voltou para o terminal, aperte **Esc** no popup (ou clique no ✕) para responder por lá.
+**Atenção:** quando você está fora da janela, enquanto um popup de permissão ou de "terminei" está aberto, o terminal espera por ele. Se voltou para o terminal, aperte **Esc** no popup (ou clique no ✕) para responder por lá.
 
 ## Configurar
 
@@ -50,4 +59,5 @@ Variáveis de ambiente (no shell ou no `env` do `settings.json` do Claude Code):
 | `CLAUDE_AVISOS_SOM` | `1` | `0` desliga o sino |
 | `CLAUDE_AVISOS_RESPOSTA` | `1` | `0` faz o "terminei" ser só um aviso, sem campo de resposta e sem segurar o terminal |
 | `CLAUDE_AVISOS_DESLIGAR` | `0` | `1` desliga tudo |
+| `CLAUDE_AVISOS_SEMPRE` | `0` | `1` avisa mesmo com a janela do Claude em foco |
 | `CLAUDE_AVISOS_PYTHON` | — | caminho do Python a usar, se o automático não achar |

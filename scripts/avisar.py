@@ -15,6 +15,11 @@ Configuração por variáveis de ambiente:
   CLAUDE_AVISOS_SOM       0 para não tocar o sino
   CLAUDE_AVISOS_RESPOSTA  0 para o aviso de "terminei" não esperar resposta
   CLAUDE_AVISOS_DESLIGAR  1 para desligar tudo
+  CLAUDE_AVISOS_SEMPRE    1 para avisar mesmo com a janela do Claude em foco
+
+No Windows o popup só aparece quando a janela do Claude (o Claude Desktop ou o
+terminal onde o Claude Code roda) não está em foco. Em foco, o hook sai calado
+e o pedido aparece no lugar de sempre.
 """
 
 from __future__ import annotations
@@ -114,6 +119,106 @@ def ultima_mensagem(dados: dict) -> str:
             if texto:
                 return texto
     return ""
+
+
+# ---------------------------------------------------------------- foco
+
+
+def _processos_windows() -> tuple[dict[int, str], dict[int, int]]:
+    """Nome e pai de cada processo, pela Toolhelp do Windows."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Entrada(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    k32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Entrada)]
+    k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Entrada)]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    nomes: dict[int, str] = {}
+    pais: dict[int, int] = {}
+    foto = k32.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+    if not foto or foto == wintypes.HANDLE(-1).value:
+        return nomes, pais
+    try:
+        e = Entrada()
+        e.dwSize = ctypes.sizeof(Entrada)
+        ok = k32.Process32FirstW(foto, ctypes.byref(e))
+        while ok:
+            nomes[e.th32ProcessID] = e.szExeFile
+            pais[e.th32ProcessID] = e.th32ParentProcessID
+            ok = k32.Process32NextW(foto, ctypes.byref(e))
+    finally:
+        k32.CloseHandle(foto)
+    return nomes, pais
+
+
+def claude_em_foco() -> bool:
+    """True quando a janela em primeiro plano é a do Claude.
+
+    Conta como janela do Claude: o Claude Desktop, ou a janela de qualquer
+    processo acima deste na árvore (o terminal onde o Claude Code roda).
+    Só no Windows; nos outros sistemas, e em qualquer erro, devolve False e o
+    popup aparece.
+    """
+    if sys.platform != "win32" or os.environ.get("CLAUDE_AVISOS_SEMPRE") == "1":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        u32 = ctypes.WinDLL("user32", use_last_error=True)
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        u32.GetForegroundWindow.restype = wintypes.HWND
+        k32.GetConsoleWindow.restype = wintypes.HWND
+        u32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+
+        janela = u32.GetForegroundWindow()
+        if not janela:
+            return False
+        if janela == k32.GetConsoleWindow():
+            return True
+        pid = wintypes.DWORD()
+        u32.GetWindowThreadProcessId(janela, ctypes.byref(pid))
+        alvo = pid.value
+
+        nomes, pais = _processos_windows()
+        if nomes.get(alvo, "").lower() == "claude.exe":
+            return True
+        atual, vistos = os.getpid(), set()
+        while atual and atual not in vistos:
+            if atual == alvo:
+                return True
+            vistos.add(atual)
+            atual = pais.get(atual, 0)
+    except Exception:  # noqa: BLE001 — na dúvida, avisa
+        return False
+    return False
+
+
+def algum_popup_aberto() -> bool:
+    try:
+        return bool(os.listdir(PASTA_VAGAS))
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------- vagas na tela
@@ -493,13 +598,19 @@ def modo_pergunta(dados: dict, tempo: int) -> None:
 
 
 def modo_aviso(dados: dict, tempo: int) -> None:
-    tipo = dados.get("notification_type", "")
-    # permissão e "esperando você" já têm popup próprio (PermissionRequest e Stop)
-    if tipo in ("permission_prompt", "idle_prompt"):
+    # Pedido de permissão e "esperando você" já costumam ter popup próprio
+    # (PermissionRequest e Stop). Este aviso cobre quando você saiu da janela
+    # depois: aparece só se não houver outro popup aberto.
+    if algum_popup_aberto():
         return
     mensagem = dados.get("message", "")
-    if "permission" in mensagem.lower() or "waiting for your input" in mensagem.lower():
-        return
+    tipo = dados.get("notification_type", "")
+    if tipo == "idle_prompt":
+        dados = {**dados, "title": "Estou esperando você"}
+        mensagem = "Terminei e estou esperando sua resposta no Claude."
+    elif tipo == "permission_prompt":
+        dados = {**dados, "title": "Preciso da sua permissão"}
+        mensagem = f"{mensagem}\nResponda na janela do Claude."
     Popup(
         dados,
         dados.get("title") or "Aviso",
@@ -547,6 +658,10 @@ def principal(argv: list[str]) -> int:
         segundo_plano = False
 
     tempo = max(10, env_int("CLAUDE_AVISOS_TEMPO", 900))
+
+    # você está olhando para o Claude: deixa o pedido aparecer no lugar de sempre
+    if not segundo_plano and claude_em_foco():
+        return 0
 
     if modo in ("pergunta", "aviso") and not segundo_plano:
         soltar_em_segundo_plano(modo, dados)
