@@ -68,4 +68,4 @@ Variáveis de ambiente (no shell ou no `env` do `settings.json` do Claude Code):
 
 ## Som
 
-O som é gerado por `assets/gerar_som.py` (duas notas curtas). Para mudar, edite as notas no script e rode `python assets/gerar_som.py`, ou aponte `CLAUDE_AVISOS_SOM_ARQUIVO` para outro `.wav`.
+`assets/aviso.wav` é o som do popup (WAV PCM; o Windows só toca esse formato). Para trocar, substitua esse arquivo ou aponte `CLAUDE_AVISOS_SOM_ARQUIVO` para outro `.wav`.
