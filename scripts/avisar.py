@@ -12,7 +12,9 @@ Claude segue com o fluxo normal do terminal. O plugin nunca pode travar o Claude
 
 Configuração por variáveis de ambiente:
   CLAUDE_AVISOS_TEMPO     segundos até o popup fechar sozinho (padrão 20, máximo 20)
-  CLAUDE_AVISOS_SOM       0 para não tocar o sino
+  CLAUDE_AVISOS_SOM       0 para não tocar som
+  CLAUDE_AVISOS_SOM_ARQUIVO  caminho de um .wav para usar no lugar do som do plugin
+  CLAUDE_AVISOS_LIMITE    máximo de caracteres da mensagem no popup (padrão 140)
   CLAUDE_AVISOS_RESPOSTA  0 para o aviso de "terminei" não esperar resposta
   CLAUDE_AVISOS_DESLIGAR  1 para desligar tudo
   CLAUDE_AVISOS_SEMPRE    1 para avisar mesmo com a janela do Claude em foco
@@ -25,7 +27,9 @@ e o pedido aparece no lugar de sempre.
 from __future__ import annotations
 
 import json
+import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,6 +38,8 @@ import time
 LARGURA = 380
 MARGEM = 16
 ESPACO = 10
+RAIZ_PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SOM_PADRAO = os.path.join(RAIZ_PLUGIN, "assets", "aviso.wav")
 PASTA_VAGAS = os.path.join(tempfile.gettempdir(), "claude-avisos")
 VAGA_VELHA = (
     60  # popup dura no máximo 20 s; vaga mais velha que isso é de um popup morto
@@ -59,6 +65,11 @@ def env_int(nome: str, padrao: int) -> int:
         return padrao
 
 
+def limite() -> int:
+    """Quantos caracteres da mensagem cabem no popup (cerca de 3 linhas)."""
+    return max(40, env_int("CLAUDE_AVISOS_LIMITE", 140))
+
+
 def encurtar(texto: str, limite: int) -> str:
     texto = " ".join(str(texto).split()) if limite < 200 else str(texto).strip()
     return texto if len(texto) <= limite else texto[: limite - 1].rstrip() + "…"
@@ -74,15 +85,15 @@ def projeto(dados: dict) -> str:
 
 def detalhe_ferramenta(nome: str, entrada: dict) -> str:
     if not isinstance(entrada, dict):
-        return encurtar(json.dumps(entrada, ensure_ascii=False), 400)
+        return encurtar(json.dumps(entrada, ensure_ascii=False), 180)
     if nome == "Bash":
-        return encurtar(entrada.get("command", ""), 400)
+        return encurtar(entrada.get("command", ""), 180)
     for chave in ("file_path", "notebook_path", "url", "path", "pattern", "query"):
         if entrada.get(chave):
-            return encurtar(entrada[chave], 400)
+            return encurtar(entrada[chave], 180)
     if nome == "ExitPlanMode" and entrada.get("plan"):
-        return encurtar(entrada["plan"], 400)
-    return encurtar(json.dumps(entrada, ensure_ascii=False, indent=1), 400)
+        return encurtar(entrada["plan"], 180)
+    return encurtar(json.dumps(entrada, ensure_ascii=False, indent=1), 180)
 
 
 def ultima_mensagem(dados: dict) -> str:
@@ -234,6 +245,115 @@ def fim_recente(segundos: int = 180) -> bool:
         return False
 
 
+def tocar_som() -> None:
+    """Toca o som do plugin sem travar a janela. Nunca usa o som do sistema."""
+    if os.environ.get("CLAUDE_AVISOS_SOM", "1") == "0":
+        return
+    arquivo = os.environ.get("CLAUDE_AVISOS_SOM_ARQUIVO") or SOM_PADRAO
+    if not os.path.isfile(arquivo):
+        return
+    try:
+        if sys.platform == "win32":
+            import winsound
+
+            winsound.PlaySound(
+                arquivo,
+                winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+            )
+            return
+        comandos = (
+            [["afplay"]] if sys.platform == "darwin" else [["paplay"], ["aplay", "-q"]]
+        )
+        for cmd in comandos:
+            if shutil.which(cmd[0]):
+                subprocess.Popen(
+                    [*cmd, arquivo],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return
+    except Exception:  # noqa: BLE001, S110 — som é enfeite, nunca motivo de erro
+        pass
+
+
+def focar_claude() -> bool:
+    """Traz para frente a janela do Claude (terminal acima deste processo ou
+    Claude Desktop). Só no Windows; devolve True se achou a janela."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        u32 = ctypes.WinDLL("user32", use_last_error=True)
+        u32.GetWindow.restype = wintypes.HWND
+        u32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+        u32.IsWindowVisible.argtypes = [wintypes.HWND]
+        u32.IsIconic.argtypes = [wintypes.HWND]
+        u32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        u32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        u32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        u32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+
+        nomes, pais = _processos_windows()
+        # primeiro os processos acima deste (o terminal), depois o Claude Desktop
+        ordem: list[int] = []
+        atual, vistos = pais.get(os.getpid(), 0), {os.getpid()}
+        while atual and atual not in vistos:
+            ordem.append(atual)
+            vistos.add(atual)
+            atual = pais.get(atual, 0)
+        ordem += [
+            p for p, n in nomes.items() if n.lower() == "claude.exe" and p not in vistos
+        ]
+
+        janelas: dict[int, list] = {}
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def cada(h, _l):
+            # janelas visíveis, de primeiro nível e com título
+            if (
+                u32.IsWindowVisible(h)
+                and not u32.GetWindow(h, 4)
+                and u32.GetWindowTextLengthW(h) > 0
+            ):
+                pid = wintypes.DWORD()
+                u32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+                janelas.setdefault(pid.value, []).append(h)
+            return True
+
+        u32.EnumWindows(cada, 0)
+        for pid in ordem:
+            if janelas.get(pid):
+                h = janelas[pid][0]
+                if u32.IsIconic(h):
+                    u32.ShowWindow(h, 9)  # SW_RESTORE
+                u32.SetForegroundWindow(h)
+                return True
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return False
+
+
+def cantos_redondos(raiz) -> None:
+    """Cantos arredondados do Windows 11 (no 10 não faz nada)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        hwnd = ctypes.windll.user32.GetParent(raiz.winfo_id())
+        preferencia = ctypes.c_int(2)  # DWMWCP_ROUND
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 33, ctypes.byref(preferencia), ctypes.sizeof(preferencia)
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+
 def algum_popup_aberto() -> bool:
     try:
         agora = time.time()
@@ -331,6 +451,9 @@ class Popup:
         self.resultado: tuple[str | None, str] = (None, "")
         self.acao_enter = acao_enter
         self.vaga = Vaga()
+        self.saindo = False
+        self.inicio = time.time()
+        clicaveis = []  # áreas que levam ao Claude quando clicadas
 
         raiz = self.raiz = tk.Tk()
         raiz.withdraw()
@@ -364,16 +487,19 @@ class Popup:
 
         topo = tk.Frame(caixa, bg=CORES["fundo"])
         topo.pack(fill="x")
-        tk.Label(
+        ponto = tk.Label(
             topo, text="●", fg=CORES["laranja"], bg=CORES["fundo"], font=f_txt
-        ).pack(side="left")
-        tk.Label(
+        )
+        ponto.pack(side="left")
+        rotulo_projeto = tk.Label(
             topo,
             text=f" Claude Code · {projeto(dados)}",
             fg=CORES["fraco"],
             bg=CORES["fundo"],
             font=f_peq,
-        ).pack(side="left")
+        )
+        rotulo_projeto.pack(side="left")
+        clicaveis += [caixa, topo, ponto, rotulo_projeto]
         fechar = tk.Label(
             topo,
             text="✕",
@@ -385,7 +511,7 @@ class Popup:
         fechar.pack(side="right")
         fechar.bind("<Button-1>", lambda _e: self.terminar(None))
 
-        tk.Label(
+        rotulo_titulo = tk.Label(
             caixa,
             text=titulo,
             fg=CORES["texto"],
@@ -393,9 +519,11 @@ class Popup:
             font=f_tit,
             anchor="w",
             justify="left",
-        ).pack(fill="x", pady=(8, 2))
+        )
+        rotulo_titulo.pack(fill="x", pady=(8, 2))
+        clicaveis.append(rotulo_titulo)
         if corpo:
-            tk.Label(
+            rotulo_corpo = tk.Label(
                 caixa,
                 text=corpo,
                 fg=CORES["texto"],
@@ -404,9 +532,11 @@ class Popup:
                 wraplength=LARGURA - 44,
                 anchor="w",
                 justify="left",
-            ).pack(fill="x")
+            )
+            rotulo_corpo.pack(fill="x")
+            clicaveis.append(rotulo_corpo)
         if codigo:
-            tk.Label(
+            rotulo_codigo = tk.Label(
                 caixa,
                 text=codigo,
                 fg=CORES["texto"],
@@ -417,7 +547,9 @@ class Popup:
                 justify="left",
                 padx=8,
                 pady=6,
-            ).pack(fill="x", pady=(6, 0))
+            )
+            rotulo_codigo.pack(fill="x", pady=(6, 0))
+            clicaveis.append(rotulo_codigo)
 
         self.entrada = None
         if campo is not None:
@@ -444,6 +576,7 @@ class Popup:
         if botoes:
             linha = tk.Frame(caixa, bg=CORES["fundo"])
             linha.pack(fill="x", pady=(10, 0))
+            clicaveis.append(linha)
             for rotulo, acao, cor in reversed(botoes):
                 b = tk.Label(
                     linha,
@@ -463,20 +596,85 @@ class Popup:
             caixa, text="", fg=CORES["fraco"], bg=CORES["fundo"], font=f_peq, anchor="w"
         )
         self.relogio.pack(fill="x", pady=(8, 0))
+        clicaveis.append(self.relogio)
+
+        for w in clicaveis:
+            w.configure(cursor="hand2")
+            w.bind("<Button-1>", self.ir_para_claude)
 
         raiz.bind("<Escape>", lambda _e: self.terminar(None))
         raiz.protocol("WM_DELETE_WINDOW", lambda: self.terminar(None))
 
         raiz.update_idletasks()
-        altura = raiz.winfo_reqheight()
-        x = raiz.winfo_screenwidth() - LARGURA - MARGEM
-        y = self.vaga.posicionar(altura + 2)
-        raiz.geometry(f"{LARGURA}x{altura}+{x}+{y}")
+        self.altura = raiz.winfo_reqheight()
+        self.x_final = raiz.winfo_screenwidth() - LARGURA - MARGEM
+        self.x_inicio = self.x_final + 60
+        self.y_base = self.vaga.posicionar(self.altura + 2)
+        self.x, self.y = self.x_inicio, self.y_base
+        self._opacidade(0.0)
+        self._mover()
         raiz.deiconify()
         raiz.lift()
-        if os.environ.get("CLAUDE_AVISOS_SOM", "1") != "0":
-            raiz.bell()
+        cantos_redondos(raiz)
+        tocar_som()
+        self._entrar(0)
         self._contar()
+
+    # ------------------------------------------------------------ animação
+
+    def _opacidade(self, valor: float) -> None:
+        try:
+            self.raiz.attributes("-alpha", max(0.0, min(1.0, valor)))
+        except self.tk.TclError:
+            pass
+
+    def _mover(self) -> None:
+        self.raiz.geometry(f"{LARGURA}x{self.altura}+{int(self.x)}+{int(self.y)}")
+
+    def _entrar(self, passo: int, total: int = 16) -> None:
+        """Desliza da direita para o lugar e aparece aos poucos."""
+        if self.saindo:
+            return
+        p = passo / total
+        suave = 1 - (1 - p) ** 3
+        self.x = self.x_inicio + (self.x_final - self.x_inicio) * suave
+        self._opacidade(suave)
+        self._mover()
+        if passo < total:
+            self.raiz.after(15, self._entrar, passo + 1, total)
+        else:
+            self.raiz.after(40, self._flutuar)
+
+    def _flutuar(self) -> None:
+        """Sobe e desce devagar; para quando o mouse está em cima ou você digita."""
+        if self.saindo:
+            return
+        px, py = self.raiz.winfo_pointerxy()
+        mouse_em_cima = (
+            self.x <= px <= self.x + LARGURA and self.y <= py <= self.y + self.altura
+        )
+        digitando = self.entrada is not None and not self.com_ajuda
+        if not (mouse_em_cima or digitando):
+            t = time.time() - self.inicio
+            self.y = self.y_base + round(3 * math.sin(t * 2 * math.pi / 2.6))
+            self._mover()
+        self.raiz.after(40, self._flutuar)
+
+    def _sair(self, passo: int = 0, total: int = 10) -> None:
+        """Some aos poucos deslizando para a direita e fecha."""
+        p = passo / total
+        self.x = self.x_final + 40 * p * p
+        self._opacidade(1 - p)
+        self._mover()
+        if passo < total:
+            self.raiz.after(15, self._sair, passo + 1, total)
+        else:
+            self.raiz.destroy()
+
+    def ir_para_claude(self, _e=None) -> None:
+        """Clique no popup (fora dos botões e do campo): abre a janela do Claude."""
+        focar_claude()
+        self.terminar(None)
 
     def _mostrar_ajuda(self) -> None:
         self.entrada.delete(0, "end")
@@ -500,9 +698,8 @@ class Popup:
         if self.restante <= 0:
             self.terminar(None)
             return
-        m, s = divmod(self.restante, 60)
         self.relogio.configure(
-            text=f"fecha sozinho em {m}:{s:02d} · Esc fecha e volta ao terminal"
+            text=f"clique para abrir o Claude · fecha em {self.restante}s"
         )
         self.restante -= 1
         self.raiz.after(1000, self._contar)
@@ -513,12 +710,15 @@ class Popup:
         return self.entrada.get().strip()
 
     def terminar(self, acao: str | None) -> None:
+        if self.saindo:
+            return
         if acao == "enviar" and not self.texto():
             self._focar()
             return
+        self.saindo = True
         self.resultado = (acao, self.texto())
         self.vaga.soltar()
-        self.raiz.destroy()
+        self._sair()
 
     def esperar(self) -> tuple[str | None, str]:
         try:
@@ -536,7 +736,7 @@ def modo_permissao(dados: dict, tempo: int) -> dict | None:
     entrada = dados.get("tool_input") or {}
     corpo = f"Quer usar {nome}"
     if isinstance(entrada, dict) and entrada.get("description"):
-        corpo += f": {encurtar(entrada['description'], 160)}"
+        corpo += f": {encurtar(entrada['description'], 100)}"
     sugestoes = dados.get("permission_suggestions")
     botoes = [("Negar", "negar", "vermelho")]
     if sugestoes:
@@ -575,7 +775,7 @@ def modo_permissao(dados: dict, tempo: int) -> dict | None:
 
 
 def modo_fim(dados: dict, tempo: int) -> dict | None:
-    resumo = encurtar(ultima_mensagem(dados), 280) or "Terminei o que você pediu."
+    resumo = encurtar(ultima_mensagem(dados), limite()) or "Terminei o que você pediu."
     marcar_fim()
     if os.environ.get("CLAUDE_AVISOS_RESPOSTA", "1") == "0":
         Popup(
@@ -609,7 +809,7 @@ def modo_pergunta(dados: dict, tempo: int) -> None:
     texto = ""
     if isinstance(perguntas, list) and perguntas:
         texto = "\n".join(
-            f"• {encurtar(p.get('question', ''), 140)}"
+            f"• {encurtar(p.get('question', ''), limite())}"
             for p in perguntas
             if isinstance(p, dict)
         )
@@ -641,7 +841,7 @@ def modo_aviso(dados: dict, tempo: int) -> None:
     Popup(
         dados,
         dados.get("title") or "Aviso",
-        encurtar(mensagem, 280),
+        encurtar(mensagem, limite()),
         botoes=[("Ok", "ok", "neutro")],
         tempo=min(tempo, 20),
     ).esperar()

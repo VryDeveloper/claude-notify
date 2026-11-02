@@ -9,6 +9,8 @@ Plugin do Claude Code que abre um popup no **canto superior direito da tela** qu
 
 Assim você dá alt+tab, faz outra coisa e é chamado quando precisar.
 
+O popup entra deslizando, fica flutuando de leve (para quando o mouse está em cima), toca um som próprio (`assets/aviso.wav`) e mostra só o começo da mensagem, para não tomar a tela. **Clicar no popup** (fora dos botões e do campo) leva você para a janela do Claude.
+
 **Só quando você não está olhando.** No Windows, se a janela do Claude (o Claude Desktop ou o terminal onde o Claude Code roda) estiver em foco, o popup não aparece e o pedido fica no lugar de sempre. Se você sair da janela depois, o aviso de "estou esperando você" do Claude Code vira um popup.
 
 ## Onde funciona
@@ -56,8 +58,14 @@ Variáveis de ambiente (no shell ou no `env` do `settings.json` do Claude Code):
 | Variável | Padrão | Efeito |
 |---|---|---|
 | `CLAUDE_AVISOS_TEMPO` | `20` | segundos até o popup fechar sozinho (de 5 a 20) |
-| `CLAUDE_AVISOS_SOM` | `1` | `0` desliga o sino |
+| `CLAUDE_AVISOS_SOM` | `1` | `0` desliga o som |
+| `CLAUDE_AVISOS_SOM_ARQUIVO` | — | caminho de um `.wav` seu para tocar no lugar do som do plugin |
+| `CLAUDE_AVISOS_LIMITE` | `140` | máximo de caracteres da mensagem mostrados no popup |
 | `CLAUDE_AVISOS_RESPOSTA` | `1` | `0` faz o "terminei" ser só um aviso, sem campo de resposta e sem segurar o terminal |
 | `CLAUDE_AVISOS_DESLIGAR` | `0` | `1` desliga tudo |
 | `CLAUDE_AVISOS_SEMPRE` | `0` | `1` avisa mesmo com a janela do Claude em foco |
 | `CLAUDE_AVISOS_PYTHON` | — | caminho do Python a usar, se o automático não achar |
+
+## Som
+
+O som é gerado por `assets/gerar_som.py` (duas notas curtas). Para mudar, edite as notas no script e rode `python assets/gerar_som.py`, ou aponte `CLAUDE_AVISOS_SOM_ARQUIVO` para outro `.wav`.
